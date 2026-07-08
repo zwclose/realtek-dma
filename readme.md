@@ -2,7 +2,7 @@
 
 This repository contains a PoC exploit for CVE-2022-25476, a vulnerability in the Realtek SD card reader driver that allows non-privileged users to access physical memory via the DMA controller.
 
-For the full technical breakdown, see the blog post.
+For the full technical breakdown, see the [blog post](https://zwclose.github.io/2026/07/08/rtsper2.html).
 
 ### Overview
 
@@ -24,4 +24,4 @@ If the sector number is omitted, the PoC defaults to sector 0.
 
 ### Testing
 
-The target project is useful for testing. Depending on user input, it either allocates 16 MB of memory and fills it with a pattern, or dumps 512 bytes at a specified virtual address. One simple way to test the PoC is to dump a virtual address to confirm it contains the pattern, then use RAMMap to obtain the corresponding physical address and pass it to the PoC. After the DMA write, dumping the same virtual address again should show that it now contains data from the SD card sector. See the Demo section of the blog post for details.
+The target project is useful for testing. Depending on user input, it either allocates 16 MB of memory and fills it with a pattern, or dumps 512 bytes at a specified virtual address. One simple way to test the PoC is to dump a virtual address to confirm it contains the pattern, then use RAMMap to obtain the corresponding physical address and pass it to the PoC. After the DMA write, dumping the same virtual address again should show that it now contains data from the SD card sector. See the Demo section of the [blog post](https://zwclose.github.io/2026/07/08/rtsper2.html) for details.
